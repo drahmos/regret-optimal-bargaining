@@ -92,8 +92,9 @@ class EpsilonGreedy(BaseAlgorithm):
         Select type: explore with prob epsilon, exploit otherwise.
         """
         # Compute current epsilon
+        # From EXPERIMENTS.md: epsilon(t) = min(1, 5K/t)
         if self.decay:
-            current_epsilon = min(1.0, self.epsilon * self.n_types / (episode + 1))
+            current_epsilon = min(1.0, 5.0 * self.n_types / (episode + 1))
         else:
             current_epsilon = self.epsilon
         

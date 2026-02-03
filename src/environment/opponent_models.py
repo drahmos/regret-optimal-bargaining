@@ -224,7 +224,8 @@ class TitForTatOpponent(OpponentModel):
         agent_offer_t_prev = history[-2]['agent_offer']
         
         # Compute agent's concession
-        agent_concession = agent_offer_t_prev - agent_offer_t
+        # If agent_offer_t < agent_offer_t_prev, agent conceded (negative concession)
+        agent_concession = agent_offer_t - agent_offer_t_prev
         
         # Get our last offer
         if 'opponent_offer' in history[-1]:
@@ -233,8 +234,9 @@ class TitForTatOpponent(OpponentModel):
             our_last = self.weights / self.weights.sum()
         
         # Mirror agent's concession with factor gamma
-        # If agent conceded, we concede too
-        our_offer = our_last - self.gamma * agent_concession
+        # If agent conceded (negative concession), we also concede (reduce our demand)
+        # Formula: x_t = x_{t-1} + gamma * (agent's concession)
+        our_offer = our_last + self.gamma * agent_concession
         
         return self._normalize_offer(our_offer)
     

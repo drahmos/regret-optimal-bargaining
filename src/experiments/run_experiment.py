@@ -107,29 +107,43 @@ class ExperimentRunner:
             agreement_reached = False
             rounds_taken = 0
             
-            # Simplified negotiation simulation
-            # In full version, this would use env.step() iteratively
-            # For now, use analytical approximation for speed
+            # Run actual negotiation using BargainingEnvironment
+            # This implements the alternating-offers protocol from the paper
+            believed_opponent = self.opponent_models[believed_type_idx]
             
-            # Check if algorithm type matches true type
-            if believed_type_idx == true_type_idx:
-                # Match: good outcome
-                base_utility = 0.85
-                noise = np.random.normal(0, 0.05)
-                episode_utility = np.clip(base_utility + noise, 0.1, 0.95)
-                agreement_reached = True
-                rounds_taken = int(10 + np.random.randint(-3, 4))
-            else:
-                # Mismatch: worse outcome
-                base_utility = 0.55
-                noise = np.random.normal(0, 0.08)
-                episode_utility = np.clip(base_utility + noise, 0.1, 0.95)
-                agreement_reached = episode_utility > 0.3
-                rounds_taken = int(15 + np.random.randint(-3, 4))
+            # Reset environment for this negotiation
+            env.reset()
             
-            # Compute oracle utility (optimal strategy)
-            oracle_util = 0.90 + np.random.normal(0, 0.02)
-            oracle_util = np.clip(oracle_util, 0.1, 0.98)
+            # Run round-by-round negotiation
+            max_rounds = env.T_max
+            agreement_reached = False
+            episode_utility = env.d  # Default: disagreement payoff
+            rounds_taken = max_rounds
+            
+            for round_num in range(1, max_rounds + 1):
+                # Generate offer based on believed opponent type
+                # Use concession strategy: start high, concede toward deadline
+                time_pressure = round_num / max_rounds
+                concession = time_pressure ** 1.5  # Non-linear concession
+                
+                # Compute offer: weighted average of agent preferences and fair split
+                agent_weights = env.agent_weights
+                fair_split = np.ones(len(agent_weights)) / len(agent_weights)
+                offer = agent_weights * (1 - concession) + fair_split * concession
+                offer = offer / offer.sum()  # Normalize to simplex
+                
+                # Execute negotiation round
+                result = env.step(offer, true_opponent)
+                
+                if result['done']:
+                    agreement_reached = result.get('accepted_by_opponent', False) or result.get('accepted_by_agent', False)
+                    episode_utility = result['utility'] if result['utility'] is not None else env.d
+                    rounds_taken = round_num
+                    break
+            
+            # Compute oracle utility (optimal strategy against known type)
+            # This should depend on the actual opponent type
+            oracle_util = env.get_oracle_utility(true_opponent)
             
             # Store results
             utilities.append(episode_utility)
