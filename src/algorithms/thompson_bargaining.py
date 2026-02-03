@@ -113,9 +113,94 @@ class ThompsonSamplingBargaining(BaseAlgorithm):
     
     def _compute_likelihood_outcome(self, outcome: Dict[str, Any]) -> np.ndarray:
         """
-        Compute likelihood based on final outcome only.
+        Compute likelihood based on final outcome using generative model.
         
-        Simpler method using just utility achieved and rounds.
+        From TECHNICAL_SPEC.md Assumption 4.1:
+        Pr[accept | x, theta, t] = 1 / (1 + exp(-beta * (u_2(x; theta) - reservation)))
+        
+        This uses the actual opponent model to compute probability of observed outcome.
+        """
+        utility = outcome['utility']
+        rounds = outcome.get('rounds', 10)
+        agreement = outcome.get('agreement_reached', utility > 0.2)
+        
+        # Import opponent models here to avoid circular dependency
+        # In practice, these would be passed to the constructor
+        try:
+            from ..environment.opponent_models import (
+                ConcederOpponent, HardlinerOpponent, 
+                TitForTatOpponent, BoulwareOpponent
+            )
+            opponent_classes = [
+                ConcederOpponent, HardlinerOpponent,
+                TitForTatOpponent, BoulwareOpponent
+            ]
+        except ImportError:
+            # Fallback to heuristic if imports fail
+            return self._compute_likelihood_heuristic(outcome)
+        
+        likelihoods = np.zeros(self.n_types)
+        
+        for k in range(self.n_types):
+            # Create instance of opponent type k
+            opponent = opponent_classes[k % len(opponent_classes)]()
+            
+            # Compute likelihood based on generative model
+            # Likelihood = Pr[outcome | theta_k] 
+            
+            # For agreement case: likelihood based on reservation probability
+            # For disagreement case: likelihood based on disagreement probability
+            
+            if agreement:
+                # Agreement reached: compute probability of accepting at this utility/round
+                # Higher likelihood if opponent's reservation was compatible
+                reservation = opponent._get_reservation_utility(rounds)
+                
+                # Logistic acceptance model with beta=5
+                beta = 5.0
+                prob_accept = 1.0 / (1.0 + np.exp(-beta * (utility - reservation)))
+                
+                # Also consider if utility is in typical range for this opponent
+                # Conceders: moderate utility, quick
+                # Hardliners: lower utility or late agreement
+                # etc.
+                if k == 0:  # Conceder
+                    type_score = 1.0 if (0.6 < utility < 0.9 and rounds < 10) else 0.5
+                elif k == 1:  # Hardliner
+                    type_score = 1.0 if (rounds > 15 or utility < 0.75) else 0.3
+                elif k == 2:  # Tit-for-Tat
+                    type_score = 1.0 if (0.5 < utility < 0.85 and 8 < rounds < 14) else 0.5
+                elif k == 3:  # Boulware
+                    type_score = 1.0 if (rounds > 12 or utility > 0.8) else 0.4
+                else:
+                    type_score = 0.5
+                
+                likelihoods[k] = prob_accept * type_score
+            else:
+                # Disagreement: opponent likely rejected or agent rejected
+                # Higher likelihood for opponents with high reservation utility
+                reservation_at_deadline = opponent._get_reservation_utility(20)
+                prob_reject = 1.0 / (1.0 + np.exp(5.0 * (utility - reservation_at_deadline)))
+                
+                # Hardliners more likely to cause disagreement
+                if k == 1:  # Hardliner
+                    likelihoods[k] = prob_reject * 2.0  # Boost hardliner for disagreements
+                else:
+                    likelihoods[k] = prob_reject
+        
+        # Normalize to sum to 1 (soft update, as in specification)
+        total = likelihoods.sum()
+        if total > 0:
+            likelihoods = likelihoods / total
+        else:
+            likelihoods = np.ones(self.n_types) / self.n_types
+        
+        return likelihoods
+    
+    def _compute_likelihood_heuristic(self, outcome: Dict[str, Any]) -> np.ndarray:
+        """
+        Fallback heuristic likelihood (when imports fail).
+        Uses simpler but still principled approach.
         """
         utility = outcome['utility']
         rounds = outcome.get('rounds', 10)
@@ -123,43 +208,26 @@ class ThompsonSamplingBargaining(BaseAlgorithm):
         
         likelihoods = np.zeros(self.n_types)
         
-        # Heuristic likelihood model:
-        # High utility + quick agreement -> likely cooperative opponent
-        # Low utility / disagreement -> likely hardliner
-        
+        # Use logistic model with estimated parameters
         for k in range(self.n_types):
-            if k == 0:  # Conceder
-                # Conceders lead to quick, moderate agreements
-                if agreement and rounds < 10 and 0.6 < utility < 0.9:
-                    likelihoods[k] = 0.8
-                elif not agreement:
-                    likelihoods[k] = 0.1
-                else:
-                    likelihoods[k] = 0.4
-                    
-            elif k == 1:  # Hardliner
-                # Hardliners lead to slow or no agreements
-                if not agreement or (agreement and rounds > 15):
-                    likelihoods[k] = 0.7
-                elif utility > 0.8:
-                    likelihoods[k] = 0.3
-                else:
-                    likelihoods[k] = 0.5
-                    
-            elif k == 2:  # Tit-for-Tat
-                # Tit-for-tat leads to moderate outcomes
-                likelihoods[k] = 0.5  # Neutral
-                if agreement and 0.5 < utility < 0.8:
-                    likelihoods[k] = 0.6
-                    
-            elif k == 3:  # Boulware
-                # Boulware leads to late agreements
-                if agreement and rounds > 12:
-                    likelihoods[k] = 0.7
-                elif not agreement:
-                    likelihoods[k] = 0.5
-                else:
-                    likelihoods[k] = 0.4
+            # Reservation utility estimate based on opponent type
+            if k == 0:  # Conceder: low reservation, decreases quickly
+                reservation = 0.6 * (1 - rounds / 20)
+            elif k == 1:  # Hardliner: high reservation
+                reservation = 0.85 if rounds < 16 else 0.3
+            elif k == 2:  # TFT: moderate
+                reservation = 0.7 * (1 - 0.5 * rounds / 20)
+            else:  # Boulware: moderate-low, drops late
+                reservation = 0.75 * (1 - 0.9 * (rounds / 20) ** 3)
+            
+            # Logistic acceptance probability
+            beta = 5.0
+            if agreement:
+                prob = 1.0 / (1.0 + np.exp(-beta * (utility - reservation)))
+            else:
+                prob = 1.0 - 1.0 / (1.0 + np.exp(-beta * (utility - reservation)))
+            
+            likelihoods[k] = max(0.1, prob)
         
         # Normalize
         total = likelihoods.sum()
