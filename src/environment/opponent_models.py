@@ -123,19 +123,20 @@ class ConcederOpponent(OpponentModel):
         """
         Generate offer with linear concession.
         
-        Offer = max_demand * (1 - t/T_max)^alpha + fair_split * (1 - (1-t/T_max)^alpha)
+        From TECHNICAL_SPEC.md Section 1.2:
+        x_t = x_max * (1 - t/T_max)^alpha
+        
+        where x_max is the offer maximizing opponent's utility (their weights).
         """
         t_norm = round / self.T_max
+        
+        # Maximum demand offer (proportional to weights)
+        x_max = self.weights / self.weights.sum()
+        
+        # Apply concession formula directly (not interpolation)
+        # As t increases, concession_factor decreases
         concession_factor = (1 - t_norm) ** self.alpha
-        
-        # Maximum demand (full weights)
-        max_offer = self.weights / self.weights.sum()
-        
-        # Fair split (equal allocation)
-        fair_split = np.ones(self.n_issues) / self.n_issues
-        
-        # Interpolate between max demand and fair split
-        offer = max_offer * concession_factor + fair_split * (1 - concession_factor)
+        offer = x_max * concession_factor
         
         return self._normalize_offer(offer)
     
@@ -164,6 +165,12 @@ class HardlinerOpponent(OpponentModel):
     def generate_offer(self, round: int, history: List[Dict]) -> np.ndarray:
         """
         Generate offer: hold firm until threshold, then sharp concession.
+        
+        From TECHNICAL_SPEC.md Section 1.2:
+        x_t = x_max                      if t < 0.8*T_max
+        x_t = x_max * exp(-beta*(t - 0.8*T_max))  if t >= 0.8*T_max
+        
+        Note: Uses ABSOLUTE time difference, not normalized.
         """
         t_norm = round / self.T_max
         
@@ -172,14 +179,13 @@ class HardlinerOpponent(OpponentModel):
             offer = self.weights / self.weights.sum()
         else:
             # Sharp concession phase
-            # Exponential decay after threshold
-            time_after = t_norm - self.threshold
-            concession = np.exp(-self.beta * time_after)
+            # Use ABSOLUTE time: (t - 0.8*T_max), not (t_norm - 0.8)
+            time_after_abs = round - self.threshold * self.T_max
+            concession = np.exp(-self.beta * time_after_abs)
             
-            max_offer = self.weights / self.weights.sum()
-            fair_split = np.ones(self.n_issues) / self.n_issues
-            
-            offer = max_offer * concession + fair_split * (1 - concession)
+            # Direct formula from spec (not interpolation)
+            x_max = self.weights / self.weights.sum()
+            offer = x_max * concession
         
         return self._normalize_offer(offer)
     
@@ -192,9 +198,9 @@ class HardlinerOpponent(OpponentModel):
             # Very high reservation (90% of max)
             return max_util * 0.9
         else:
-            # Sharp drop after threshold
-            time_after = t_norm - self.threshold
-            return max_util * np.exp(-self.beta * time_after)
+            # Sharp drop after threshold - use ABSOLUTE time
+            time_after_abs = round - self.threshold * self.T_max
+            return max_util * np.exp(-self.beta * time_after_abs)
 
 
 class TitForTatOpponent(OpponentModel):
@@ -264,18 +270,19 @@ class BoulwareOpponent(OpponentModel):
         """
         Generate offer with cubic concession function.
         
-        Concession = 1 - (t/T_max)^3
+        From TECHNICAL_SPEC.md Section 1.2:
+        x_t = x_max * (1 - (t/T_max)^3)
+        
+        Cubic concession: starts slow, accelerates near deadline.
         """
         t_norm = round / self.T_max
         
-        # Cubic concession
+        # Maximum demand offer
+        x_max = self.weights / self.weights.sum()
+        
+        # Cubic concession factor (direct formula, not interpolation)
         concession = 1 - (t_norm ** 3)
-        
-        # Start with max demand, concede to fair split
-        max_offer = self.weights / self.weights.sum()
-        fair_split = np.ones(self.n_issues) / self.n_issues
-        
-        offer = max_offer * concession + fair_split * (1 - concession)
+        offer = x_max * concession
         
         return self._normalize_offer(offer)
     
